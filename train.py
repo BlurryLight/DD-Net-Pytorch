@@ -135,26 +135,46 @@ def poses_motion(P, frame_l):
 #     return x
 
 class c1D(nn.Module):
+    # input (B,C,D) //batch,channels,dims
     def __init__(self, input_channels, input_dims, filters, kernel):
         super(c1D, self).__init__()
-        self.cut_last_element = (
-            (2 * filters - input_dims + kernel - 1) % 2 != 0)
-        padding = math.ceil((2 * filters - input_dims + kernel - 1)/2)
-        self.conv1 = nn.Conv1d(input_channels, input_channels,
-                               kernel, bias=False, padding=padding)
+        self.cut_last_element = (kernel % 2 == 0)
+        self.padding = math.ceil((kernel - 1)/2)
+        self.conv1 = nn.Conv1d(input_dims, 2 * filters,
+                               kernel, bias=False, padding=self.padding)
         self.bn = nn.BatchNorm1d(num_features=input_channels)
 
     def forward(self, x):
-        if self.cut_last_element:
+        # x (B,D,C)
+        x = x.permute(0, 2, 1)
+        # output (B,2 * filters,C)
+        if(self.cut_last_element):
             output = self.conv1(x)[:, :, :-1]
         else:
             output = self.conv1(x)
+        # output = (B,C,2 * filters)
+        output = output.permute(0, 2, 1)
         output = self.bn(output)
         output = F.leaky_relu(output, 0.2, True)
         return output
 
 
-c1 = c1D(32, 105, 64, 1)
+class block(nn.Module):
+    def __init__(self, input_channels, input_dims, filters, kernel):
+        super(block, self).__init__()
+        self.c1D1 = c1D(input_channels, input_dims, filters, kernel)
+        self.c1D2 = c1D(input_channels, 2 * filters, filters, kernel)
+
+    def forward(self, x):
+        output = self.c1D1(x)
+        output = self.c1D2(output)
+        return output
+
+
+class DDNet(nn.Module):
+
+
+c1 = block(32, 105, 64, 3)
 print(c1(torch.from_numpy(X_0).type('torch.FloatTensor')).shape)
 
 # def block(x, filters):
