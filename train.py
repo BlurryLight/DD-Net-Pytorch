@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 #! coding:utf-8
+from pickle import FLOAT
 from sklearn import preprocessing
 import pickle
 import sklearn
@@ -10,7 +11,9 @@ import scipy.ndimage.interpolation as inter
 from scipy.signal import medfilt
 from scipy.spatial.distance import cdist
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+import math
 Train = pickle.load(open("GT_train_1.pkl", "rb"))
 Test = pickle.load(open("GT_test_1.pkl", "rb"))
 
@@ -123,7 +126,7 @@ def poses_motion(P, frame_l):
     return P_diff_slow, P_diff_fast
 
 
-poses_motion(torch.from_numpy(X_1), C.frame_l)
+# poses_motion(torch.from_numpy(X_1), C.frame_l)
 
 # def c1D(x, filters, kernel):
 #     x = Conv1D(filters, kernel_size=kernel, padding='same', use_bias=False)(x)
@@ -131,6 +134,28 @@ poses_motion(torch.from_numpy(X_1), C.frame_l)
 #     x = LeakyReLU(alpha=0.2)(x)
 #     return x
 
+class c1D(nn.Module):
+    def __init__(self, input_channels, input_dims, filters, kernel):
+        super(c1D, self).__init__()
+        self.cut_last_element = (
+            (2 * filters - input_dims + kernel - 1) % 2 != 0)
+        padding = math.ceil((2 * filters - input_dims + kernel - 1)/2)
+        self.conv1 = nn.Conv1d(input_channels, input_channels,
+                               kernel, bias=False, padding=padding)
+        self.bn = nn.BatchNorm1d(num_features=input_channels)
+
+    def forward(self, x):
+        if self.cut_last_element:
+            output = self.conv1(x)[:, :, :-1]
+        else:
+            output = self.conv1(x)
+        output = self.bn(output)
+        output = F.leaky_relu(output, 0.2, True)
+        return output
+
+
+c1 = c1D(32, 105, 64, 1)
+print(c1(torch.from_numpy(X_0).type('torch.FloatTensor')).shape)
 
 # def block(x, filters):
 #     x = c1D(x, filters, 3)
