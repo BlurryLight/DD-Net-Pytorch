@@ -1,19 +1,20 @@
 #! /usr/bin/env python
 #! coding:utf-8
-from pickle import FLOAT
 from sklearn import preprocessing
 import pickle
-import sklearn
-from torch import scalar_tensor
 from tqdm import tqdm
 import numpy as np
 import scipy.ndimage.interpolation as inter
-from scipy.signal import medfilt
 from scipy.spatial.distance import cdist
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import argparse
+import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR
+import sys
+
 Train = pickle.load(open("GT_train_1.pkl", "rb"))
 Test = pickle.load(open("GT_test_1.pkl", "rb"))
 
@@ -68,8 +69,9 @@ def data_generator(T, C, le):
         p = zoom(p, target_l=C.frame_l,
                  joints_num=C.joint_n, joints_dim=C.joint_d)
         # p.shape (target_frame,joint_num,joint_coords_dims)
-        label = np.zeros(C.clc_num)
-        label[labels[i]] = 1
+        # label = np.zeros(C.clc_num)
+        # label[labels[i]] = 1
+        label = labels[i]
         # M.shape (target_frame,(joint_num - 1) * joint_num / 2)
         M = get_CG(p, C)
 
@@ -93,11 +95,6 @@ class Config():
         self.filters = 64
 
 
-C = Config()
-X_0, X_1, Y = data_generator(Train, C, le)
-print(X_0.shape)
-print(X_1.shape)
-
 # net
 
 
@@ -116,13 +113,15 @@ def poses_diff(x):
     return x
 
 
-def poses_motion(P, frame_l):
+def poses_motion(P):
+    # different from the original version
+    # TODO: check the funtion, make sure it's right
     P_diff_slow = poses_diff(P)
     P_diff_slow = torch.flatten(P_diff_slow, start_dim=2)
     P_fast = P[:, ::2, :, :]
     P_diff_fast = poses_diff(P_fast)
     P_diff_fast = torch.flatten(P_diff_fast, start_dim=2)
-    # print(P_diff_slow.shape, P_diff_fast.shape)
+    # return (B,target_l,joint_d * joint_n) , (B,target_l/2,joint_d * joint_n)
     return P_diff_slow, P_diff_fast
 
 
@@ -136,23 +135,24 @@ def poses_motion(P, frame_l):
 
 class c1D(nn.Module):
     # input (B,C,D) //batch,channels,dims
+    # output = (B,C,filters)
     def __init__(self, input_channels, input_dims, filters, kernel):
         super(c1D, self).__init__()
         self.cut_last_element = (kernel % 2 == 0)
         self.padding = math.ceil((kernel - 1)/2)
-        self.conv1 = nn.Conv1d(input_dims, 2 * filters,
+        self.conv1 = nn.Conv1d(input_dims, filters,
                                kernel, bias=False, padding=self.padding)
         self.bn = nn.BatchNorm1d(num_features=input_channels)
 
     def forward(self, x):
         # x (B,D,C)
         x = x.permute(0, 2, 1)
-        # output (B,2 * filters,C)
+        # output (B,filters,C)
         if(self.cut_last_element):
             output = self.conv1(x)[:, :, :-1]
         else:
             output = self.conv1(x)
-        # output = (B,C,2 * filters)
+        # output = (B,C,filters)
         output = output.permute(0, 2, 1)
         output = self.bn(output)
         output = F.leaky_relu(output, 0.2, True)
@@ -163,25 +163,12 @@ class block(nn.Module):
     def __init__(self, input_channels, input_dims, filters, kernel):
         super(block, self).__init__()
         self.c1D1 = c1D(input_channels, input_dims, filters, kernel)
-        self.c1D2 = c1D(input_channels, 2 * filters, filters, kernel)
+        self.c1D2 = c1D(input_channels, filters, filters, kernel)
 
     def forward(self, x):
         output = self.c1D1(x)
         output = self.c1D2(output)
         return output
-
-
-class DDNet(nn.Module):
-
-
-c1 = block(32, 105, 64, 3)
-print(c1(torch.from_numpy(X_0).type('torch.FloatTensor')).shape)
-
-# def block(x, filters):
-#     x = c1D(x, filters, 3)
-#     x = c1D(x, filters, 3)
-#     return x
-
 
 # def d1D(x, filters):
 #     x = Dense(filters, use_bias=False)(x)
@@ -190,66 +177,215 @@ print(c1(torch.from_numpy(X_0).type('torch.FloatTensor')).shape)
 #     return x
 
 
-# def build_FM(frame_l=32, joint_n=22, joint_d=2, feat_d=231, filters=16):
-#     M = Input(shape=(frame_l, feat_d))
-#     P = Input(shape=(frame_l, joint_n, joint_d))
+class d1D(nn.Module):
+    def __init__(self, input_dims, filters):
+        super(d1D, self).__init__()
+        self.linear = nn.Linear(input_dims, filters)
+        self.bn = nn.BatchNorm1d(num_features=filters)
 
-#     diff_slow, diff_fast = pose_motion(P, frame_l)
-
-#     x = c1D(M, filters*2, 1)
-#     x = SpatialDropout1D(0.1)(x)
-#     x = c1D(x, filters, 3)
-#     x = SpatialDropout1D(0.1)(x)
-#     x = c1D(x, filters, 1)
-#     x = MaxPooling1D(2)(x)
-#     x = SpatialDropout1D(0.1)(x)
-
-#     x_d_slow = c1D(diff_slow, filters*2, 1)
-#     x_d_slow = SpatialDropout1D(0.1)(x_d_slow)
-#     x_d_slow = c1D(x_d_slow, filters, 3)
-#     x_d_slow = SpatialDropout1D(0.1)(x_d_slow)
-#     x_d_slow = c1D(x_d_slow, filters, 1)
-#     x_d_slow = MaxPool1D(2)(x_d_slow)
-#     x_d_slow = SpatialDropout1D(0.1)(x_d_slow)
-
-#     x_d_fast = c1D(diff_fast, filters*2, 1)
-#     x_d_fast = SpatialDropout1D(0.1)(x_d_fast)
-#     x_d_fast = c1D(x_d_fast, filters, 3)
-#     x_d_fast = SpatialDropout1D(0.1)(x_d_fast)
-#     x_d_fast = c1D(x_d_fast, filters, 1)
-#     x_d_fast = SpatialDropout1D(0.1)(x_d_fast)
-
-#     x = concatenate([x, x_d_slow, x_d_fast])
-#     x = block(x, filters*2)
-#     x = MaxPool1D(2)(x)
-#     x = SpatialDropout1D(0.1)(x)
-
-#     x = block(x, filters*4)
-#     x = MaxPool1D(2)(x)
-#     x = SpatialDropout1D(0.1)(x)
-
-#     x = block(x, filters*8)
-#     x = SpatialDropout1D(0.1)(x)
-
-#     return Model(inputs=[M, P], outputs=x)
+    def forward(self, x):
+        output = self.linear(x)
+        output = self.bn(output)
+        output = F.leaky_relu(output, 0.2)
+        return output
 
 
-# def build_DD_Net(C):
-#     M = Input(name='M', shape=(C.frame_l, C.feat_d))
-#     P = Input(name='P', shape=(C.frame_l, C.joint_n, C.joint_d))
+class DDNet_Original(nn.Module):
+    def __init__(self, frame_l, joint_n, joint_d, feat_d, filters, class_num):
+        super(DDNet_Original, self).__init__()
+        # JCD part
+        self.jcd_conv1 = c1D(frame_l, feat_d, 2 * filters, 1)
+        self.jcd_conv2 = c1D(frame_l, 2 * filters, filters, 3)
+        self.jcd_conv3 = c1D(frame_l, filters, filters, 1)
+        self.jcd_pool = nn.MaxPool1d(kernel_size=2)
 
-#     FM = build_FM(C.frame_l, C.joint_n, C.joint_d, C.feat_d, C.filters)
+        # diff_slow part
+        self.slow_conv1 = c1D(frame_l, joint_n * joint_d, 2 * filters, 1)
+        self.slow_conv2 = c1D(frame_l, 2 * filters, filters, 3)
+        self.slow_conv3 = c1D(frame_l, filters, filters, 1)
+        self.slow_pool = nn.MaxPool1d(kernel_size=2)
 
-#     x = FM([M, P])
+        # fast_part
+        self.fast_conv1 = c1D(frame_l//2, joint_n * joint_d, 2 * filters, 1)
+        self.fast_conv2 = c1D(frame_l//2, 2 * filters, filters, 3)
+        self.fast_conv3 = c1D(frame_l//2, filters, filters, 1)
 
-#     x = GlobalMaxPool1D()(x)
+        # after cat
+        self.block1 = block(frame_l//2, 3 * filters, 2 * filters, 3)
+        self.block_pool1 = nn.MaxPool1d(kernel_size=2)
 
-#     x = d1D(x, 128)
-#     x = Dropout(0.5)(x)
-#     x = d1D(x, 128)
-#     x = Dropout(0.5)(x)
-#     x = Dense(C.clc_num, activation='softmax')(x)
+        self.block2 = block(frame_l//4, 2 * filters, 4 * filters, 3)
+        self.block_pool2 = nn.MaxPool1d(kernel_size=2)
 
-#     # Self-supervised part
-#     model = Model(inputs=[M, P], outputs=x)
-#     return model
+        self.block3 = block(frame_l//8, 4 * filters, 8 * filters, 3)
+
+        self.linear1 = nn.Sequential(
+            d1D(8 * filters, 128),
+            nn.Dropout(0.5)
+        )
+        self.linear2 = nn.Sequential(
+            d1D(128, 128),
+            nn.Dropout(0.5)
+        )
+
+        self.linear3 = nn.Linear(128, class_num)
+
+    def forward(self, M, P=None):
+        x = self.jcd_conv1(M)
+        x = self.jcd_conv2(x)
+        x = self.jcd_conv3(x)
+        x = x.permute(0, 2, 1)
+        # pool will downsample the D dim of (B,C,D)
+        # but we want to downsample the C channels
+        # 1x1 conv may be a better choice
+        x = self.jcd_pool(x)
+        x = x.permute(0, 2, 1)
+
+        diff_slow, diff_fast = poses_motion(P)
+        x_d_slow = self.slow_conv1(diff_slow)
+        x_d_slow = self.slow_conv2(x_d_slow)
+        x_d_slow = self.slow_conv3(x_d_slow)
+        x_d_slow = x_d_slow.permute(0, 2, 1)
+        x_d_slow = self.slow_pool(x_d_slow)
+        x_d_slow = x_d_slow.permute(0, 2, 1)
+
+        x_d_fast = self.fast_conv1(diff_fast)
+        x_d_fast = self.fast_conv2(x_d_fast)
+        x_d_fast = self.fast_conv3(x_d_fast)
+        # x,x_d_fast,x_d_slow shape: (B,framel//2,filters)
+
+        x = torch.cat((x, x_d_slow, x_d_fast), dim=2)
+        x = self.block1(x)
+        x = x.permute(0, 2, 1)
+        x = self.block_pool1(x)
+        x = x.permute(0, 2, 1)
+
+        x = self.block2(x)
+        x = x.permute(0, 2, 1)
+        x = self.block_pool2(x)
+        x = x.permute(0, 2, 1)
+
+        x = self.block3(x)
+        # max pool over (B,C,D) C channels
+        x = torch.max(x, dim=1).values
+
+        x = self.linear1(x)
+        x = self.linear2(x)
+        x = self.linear3(x)
+        return x
+
+
+# c1 = DDNet_Original(C.frame_l, C.joint_n, C.joint_d,
+#                     C.feat_d, C.filters, C.clc_num)
+# c1(
+#     torch.from_numpy(X_0).type('torch.FloatTensor'),
+#     torch.from_numpy(X_1).type('torch.FloatTensor')
+# )
+
+
+def train(args, model, device, train_loader, optimizer, epoch, criterion):
+    model.train()
+    for batch_idx, (data1, data2, target) in enumerate(tqdm(train_loader)):
+        M, P, target = data1.to(device), data2.to(device), target.to(device)
+        optimizer.zero_grad()
+        output = model(M, P)
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.step()
+        if batch_idx % args.log_interval == 0:
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                epoch, batch_idx * len(data1), len(train_loader.dataset),
+                100. * batch_idx / len(train_loader), loss.item()))
+            if args.dry_run:
+                break
+
+
+def test(model, device, test_loader):
+    model.eval()
+    test_loss = 0
+    correct = 0
+    criterion = nn.CrossEntropyLoss(reduction='sum')
+    with torch.no_grad():
+        for _, (data1, data2, target) in enumerate(tqdm(test_loader)):
+            M, P, target = data1.to(device), data2.to(device), target.to(device)
+            output = model(M, P)
+            # sum up batch loss
+            test_loss += criterion(output, target).item()
+            # get the index of the max log-probability
+            pred = output.argmax(dim=1, keepdim=True)
+            correct += pred.eq(target.view_as(pred)).sum().item()
+
+    test_loss /= len(test_loader.dataset)
+
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+        test_loss, correct, len(test_loader.dataset),
+        100. * correct / len(test_loader.dataset)))
+
+
+def main():
+    # Training settings
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch-size', type=int, default=64, metavar='N',
+                        help='input batch size for training (default: 64)')
+    parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
+                        help='input batch size for testing (default: 1000)')
+    parser.add_argument('--epochs', type=int, default=199, metavar='N',
+                        help='number of epochs to train (default: 199)')
+    parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
+                        help='learning rate (default: 0.01)')
+    parser.add_argument('--gamma', type=float, default=0.7, metavar='M',
+                        help='Learning rate step gamma (default: 0.7)')
+    parser.add_argument('--no-cuda', action='store_true', default=False,
+                        help='disables CUDA training')
+    parser.add_argument('--dry-run', action='store_true', default=False,
+                        help='quickly check a single pass')
+    parser.add_argument('--log-interval', type=int, default=2, metavar='N',
+                        help='how many batches to wait before logging training status')
+    parser.add_argument('--save-model', action='store_true', default=False,
+                        help='For Saving the current Model')
+    args = parser.parse_args()
+    use_cuda = not args.no_cuda and torch.cuda.is_available()
+
+    device = torch.device("cuda" if use_cuda else "cpu")
+
+    kwargs = {'batch_size': args.batch_size}
+    if use_cuda:
+        kwargs.update({'num_workers': 1,
+                       'pin_memory': True,
+                       'shuffle': True},)
+    C = Config()
+    X_0, X_1, Y = data_generator(Train, C, le)
+    X_0 = torch.from_numpy(X_0).type('torch.FloatTensor')
+    X_1 = torch.from_numpy(X_1).type('torch.FloatTensor')
+    Y = torch.from_numpy(Y).type('torch.LongTensor')
+
+    X_0_t, X_1_t, Y_t = data_generator(Test, C, le)
+    X_0_t = torch.from_numpy(X_0_t).type('torch.FloatTensor')
+    X_1_t = torch.from_numpy(X_1_t).type('torch.FloatTensor')
+    Y_t = torch.from_numpy(Y_t).type('torch.LongTensor')
+
+    trainset = torch.utils.data.TensorDataset(X_0, X_1, Y)
+    train_loader = torch.utils.data.DataLoader(trainset, **kwargs)
+
+    testset = torch.utils.data.TensorDataset(X_0_t, X_1_t, Y_t)
+    test_loader = torch.utils.data.DataLoader(
+        testset, batch_size=args.test_batch_size)
+
+    Net = DDNet_Original(C.frame_l, C.joint_n, C.joint_d,
+                         C.feat_d, C.filters, C.clc_num)
+    model = Net.to(device)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
+
+    criterion = nn.CrossEntropyLoss()
+    scheduler = StepLR(optimizer, step_size=10, gamma=args.gamma)
+    for epoch in range(1, args.epochs + 1):
+        train(args, model, device, train_loader, optimizer, epoch, criterion)
+        test(model, device, test_loader)
+        scheduler.step()
+
+    if args.save_model:
+        torch.save(model.state_dict(), "model.pt")
+
+
+if __name__ == '__main__':
+    main()
