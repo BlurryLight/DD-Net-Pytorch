@@ -1,5 +1,7 @@
 #! /usr/bin/env python
 #! coding:utf-8
+from pathlib import Path
+import os
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import torch
@@ -10,10 +12,11 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from dataloader.jhmdb_loader import load_jhmdb_data
-from utils import data_generator
+from utils import data_generator, makedir
 # from models.DDNet_Original import DDNet_Original as DDNet
 from models.DDNet import DDNet
 import sys
+import time
 sys.path.insert(0, './pytorch-summary/torchsummary/')
 from torchsummary import summary  # noqa
 
@@ -147,6 +150,8 @@ def main():
         test(model, device, test_loader)
         scheduler.step(train_loss)
 
+    savedir = Path('experiments') / Path(str(int(time.time())))
+    makedir(savedir)
     fig, (ax1, ax2) = plt.subplots(2)
     ax1.plot(history['train_loss'])
     ax1.plot(history['test_loss'])
@@ -159,9 +164,9 @@ def main():
     ax2.set_xlabel('Epoch')
     ax2.plot(history['test_acc'])
     fig.tight_layout()
-    fig.savefig("temp.png")
+    fig.savefig(str(savedir / "temp.png"))
     if args.save_model:
-        torch.save(model.state_dict(), "model.pt")
+        torch.save(model.state_dict(), str(savedir/"model.pt"))
 
 
 if __name__ == '__main__':

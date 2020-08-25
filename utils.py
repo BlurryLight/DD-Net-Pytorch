@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+import pathlib
 
 # Temple resizing function
 # interpolate l frames to target_l frames
@@ -97,3 +98,7 @@ def poses_motion(P):
     P_diff_fast = torch.flatten(P_diff_fast, start_dim=2)
     # return (B,target_l,joint_d * joint_n) , (B,target_l/2,joint_d * joint_n)
     return P_diff_slow, P_diff_fast
+
+
+def makedir(path):
+    pathlib.Path(path).mkdir(parents=True, exist_ok=True)
