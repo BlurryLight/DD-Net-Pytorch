@@ -12,8 +12,10 @@ import torch.nn.functional as F
 import math
 import argparse
 import torch.optim as optim
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 import sys
+sys.path.append('./pytorch-summary/torchsummary/')
+from torchsummary import summary  # noqa
 
 Train = pickle.load(open("GT_train_1.pkl", "rb"))
 Test = pickle.load(open("GT_test_1.pkl", "rb"))
@@ -125,14 +127,6 @@ def poses_motion(P):
     return P_diff_slow, P_diff_fast
 
 
-# poses_motion(torch.from_numpy(X_1), C.frame_l)
-
-# def c1D(x, filters, kernel):
-#     x = Conv1D(filters, kernel_size=kernel, padding='same', use_bias=False)(x)
-#     x = BatchNormalization()(x)
-#     x = LeakyReLU(alpha=0.2)(x)
-#     return x
-
 class c1D(nn.Module):
     # input (B,C,D) //batch,channels,dims
     # output = (B,C,filters)
@@ -170,12 +164,6 @@ class block(nn.Module):
         output = self.c1D2(output)
         return output
 
-# def d1D(x, filters):
-#     x = Dense(filters, use_bias=False)(x)
-#     x = BatchNormalization()(x)
-#     x = LeakyReLU(alpha=0.2)(x)
-#     return x
-
 
 class d1D(nn.Module):
     def __init__(self, input_dims, filters):
@@ -190,34 +178,70 @@ class d1D(nn.Module):
         return output
 
 
+class spatialDropout1D(nn.Module):
+    def __init__(self, p):
+        super(spatialDropout1D, self).__init__()
+        self.dropout = nn.Dropout2d(p)
+
+    def forward(self, x):
+        x = x.permute(0, 2, 1)
+        x = self.dropout(x)
+        x = x.permute(0, 2, 1)
+        return x
+
+
 class DDNet_Original(nn.Module):
     def __init__(self, frame_l, joint_n, joint_d, feat_d, filters, class_num):
         super(DDNet_Original, self).__init__()
         # JCD part
-        self.jcd_conv1 = c1D(frame_l, feat_d, 2 * filters, 1)
-        self.jcd_conv2 = c1D(frame_l, 2 * filters, filters, 3)
+        self.jcd_conv1 = nn.Sequential(
+            c1D(frame_l, feat_d, 2 * filters, 1),
+            spatialDropout1D(0.1)
+        )
+        self.jcd_conv2 = nn.Sequential(
+            c1D(frame_l, 2 * filters, filters, 3),
+            spatialDropout1D(0.1)
+        )
         self.jcd_conv3 = c1D(frame_l, filters, filters, 1)
-        self.jcd_pool = nn.MaxPool1d(kernel_size=2)
+        self.jcd_pool = nn.Sequential(
+            nn.MaxPool1d(kernel_size=2),
+            spatialDropout1D(0.1)
+        )
 
         # diff_slow part
-        self.slow_conv1 = c1D(frame_l, joint_n * joint_d, 2 * filters, 1)
-        self.slow_conv2 = c1D(frame_l, 2 * filters, filters, 3)
+        self.slow_conv1 = nn.Sequential(
+            c1D(frame_l, joint_n * joint_d, 2 * filters, 1),
+            spatialDropout1D(0.1)
+        )
+        self.slow_conv2 = nn.Sequential(
+            c1D(frame_l, 2 * filters, filters, 3),
+            spatialDropout1D(0.1)
+        )
         self.slow_conv3 = c1D(frame_l, filters, filters, 1)
-        self.slow_pool = nn.MaxPool1d(kernel_size=2)
+        self.slow_pool = nn.Sequential(
+            nn.MaxPool1d(kernel_size=2),
+            spatialDropout1D(0.1)
+        )
 
         # fast_part
-        self.fast_conv1 = c1D(frame_l//2, joint_n * joint_d, 2 * filters, 1)
-        self.fast_conv2 = c1D(frame_l//2, 2 * filters, filters, 3)
-        self.fast_conv3 = c1D(frame_l//2, filters, filters, 1)
+        self.fast_conv1 = nn.Sequential(
+            c1D(frame_l//2, joint_n * joint_d, 2 * filters, 1), spatialDropout1D(0.1))
+        self.fast_conv2 = nn.Sequential(
+            c1D(frame_l//2, 2 * filters, filters, 3), spatialDropout1D(0.1))
+        self.fast_conv3 = nn.Sequential(
+            c1D(frame_l//2, filters, filters, 1), spatialDropout1D(0.1))
 
         # after cat
         self.block1 = block(frame_l//2, 3 * filters, 2 * filters, 3)
-        self.block_pool1 = nn.MaxPool1d(kernel_size=2)
+        self.block_pool1 = nn.Sequential(
+            nn.MaxPool1d(kernel_size=2), spatialDropout1D(0.1))
 
         self.block2 = block(frame_l//4, 2 * filters, 4 * filters, 3)
-        self.block_pool2 = nn.MaxPool1d(kernel_size=2)
+        self.block_pool2 = nn.Sequential(nn.MaxPool1d(
+            kernel_size=2), spatialDropout1D(0.1))
 
-        self.block3 = block(frame_l//8, 4 * filters, 8 * filters, 3)
+        self.block3 = nn.Sequential(
+            block(frame_l//8, 4 * filters, 8 * filters, 3), spatialDropout1D(0.1))
 
         self.linear1 = nn.Sequential(
             d1D(8 * filters, 128),
@@ -275,21 +299,15 @@ class DDNet_Original(nn.Module):
         return x
 
 
-# c1 = DDNet_Original(C.frame_l, C.joint_n, C.joint_d,
-#                     C.feat_d, C.filters, C.clc_num)
-# c1(
-#     torch.from_numpy(X_0).type('torch.FloatTensor'),
-#     torch.from_numpy(X_1).type('torch.FloatTensor')
-# )
-
-
 def train(args, model, device, train_loader, optimizer, epoch, criterion):
     model.train()
+    train_loss = 0
     for batch_idx, (data1, data2, target) in enumerate(tqdm(train_loader)):
         M, P, target = data1.to(device), data2.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(M, P)
         loss = criterion(output, target)
+        train_loss += loss.detach().item()
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
@@ -298,6 +316,7 @@ def train(args, model, device, train_loader, optimizer, epoch, criterion):
                 100. * batch_idx / len(train_loader), loss.item()))
             if args.dry_run:
                 break
+    return train_loss
 
 
 def test(model, device, test_loader):
@@ -313,6 +332,9 @@ def test(model, device, test_loader):
             test_loss += criterion(output, target).item()
             # get the index of the max log-probability
             pred = output.argmax(dim=1, keepdim=True)
+            # output shape (B,Class)
+            # target_shape (B)
+            # pred shape (B,1)
             correct += pred.eq(target.view_as(pred)).sum().item()
 
     test_loss /= len(test_loader.dataset)
@@ -333,8 +355,8 @@ def main():
                         help='number of epochs to train (default: 199)')
     parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                         help='learning rate (default: 0.01)')
-    parser.add_argument('--gamma', type=float, default=0.7, metavar='M',
-                        help='Learning rate step gamma (default: 0.7)')
+    parser.add_argument('--gamma', type=float, default=0.5, metavar='M',
+                        help='Learning rate step gamma (default: 0.5)')
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--dry-run', action='store_true', default=False,
@@ -374,14 +396,18 @@ def main():
     Net = DDNet_Original(C.frame_l, C.joint_n, C.joint_d,
                          C.feat_d, C.filters, C.clc_num)
     model = Net.to(device)
+
+    summary(model, [(32, 105), (32, 15, 2)])
     optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
 
     criterion = nn.CrossEntropyLoss()
-    scheduler = StepLR(optimizer, step_size=10, gamma=args.gamma)
+    scheduler = ReduceLROnPlateau(
+        optimizer, factor=args.gamma, patience=5, cooldown=0.5, min_lr=5e-6, verbose=True)
     for epoch in range(1, args.epochs + 1):
-        train(args, model, device, train_loader, optimizer, epoch, criterion)
+        train_loss = train(args, model, device, train_loader,
+                           optimizer, epoch, criterion)
         test(model, device, test_loader)
-        scheduler.step()
+        scheduler.step(train_loss)
 
     if args.save_model:
         torch.save(model.state_dict(), "model.pt")
