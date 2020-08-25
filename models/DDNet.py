@@ -89,7 +89,8 @@ class DDNet(nn.Module):
         )
         self.jcd_conv3 = c1D(frame_l, filters, filters, 1)
         self.jcd_pool = nn.Sequential(
-            nn.Conv1d(frame_l, frame_l//2, kernel_size=1, bias=False),
+            nn.Conv1d(frame_l, frame_l//2, kernel_size=3,
+                      padding=1, bias=False),
             spatialDropout1D(0.1)
         )
 
@@ -104,7 +105,8 @@ class DDNet(nn.Module):
         )
         self.slow_conv3 = c1D(frame_l, filters, filters, 1)
         self.slow_pool = nn.Sequential(
-            nn.Conv1d(frame_l, frame_l//2, kernel_size=1, bias=False),
+            nn.Conv1d(frame_l, frame_l//2, kernel_size=3,
+                      padding=1, bias=False),
             spatialDropout1D(0.1)
         )
 
@@ -119,12 +121,14 @@ class DDNet(nn.Module):
         # after cat
         self.block1 = block(frame_l//2, 3 * filters, 2 * filters, 3)
         self.block_pool1 = nn.Sequential(
-            nn.Conv1d(frame_l // 2, frame_l//4, kernel_size=1, bias=False),
+            nn.Conv1d(frame_l // 2, frame_l//4,
+                      kernel_size=3, padding=1, bias=False),
             spatialDropout1D(0.1))
 
         self.block2 = block(frame_l//4, 2 * filters, 4 * filters, 3)
         self.block_pool2 = nn.Sequential(
-            nn.Conv1d(frame_l // 4, frame_l//8, kernel_size=1, bias=False),
+            nn.Conv1d(frame_l // 4, frame_l//8,
+                      kernel_size=3, padding=1, bias=False),
             spatialDropout1D(0.1))
 
         self.block3 = nn.Sequential(
