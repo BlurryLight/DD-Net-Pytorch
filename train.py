@@ -11,7 +11,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from dataloader.jhmdb_loader import load_jhmdb_data
 from utils import data_generator
-from models.DDNet_Original import DDNet_Original as DDNet
+# from models.DDNet_Original import DDNet_Original as DDNet
+from models.DDNet import DDNet
 import sys
 sys.path.append('./pytorch-summary/torchsummary/')
 from torchsummary import summary  # noqa
