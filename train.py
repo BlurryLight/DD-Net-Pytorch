@@ -14,7 +14,7 @@ from utils import data_generator
 # from models.DDNet_Original import DDNet_Original as DDNet
 from models.DDNet import DDNet
 import sys
-sys.path.append('./pytorch-summary/torchsummary/')
+sys.path.insert(0, './pytorch-summary/torchsummary/')
 from torchsummary import summary  # noqa
 
 history = {
