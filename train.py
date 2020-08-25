@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 #! coding:utf-8
+import matplotlib.pyplot as plt
 from sklearn import preprocessing
 import pickle
 from tqdm import tqdm
@@ -23,6 +24,11 @@ Test = pickle.load(open("GT_test_1.pkl", "rb"))
 le = preprocessing.LabelEncoder()
 print(le.fit(Train['label']))
 print(list(Train), len(Train['label']))
+history = {
+    "train_loss": [],
+    "test_loss": [],
+    "test_acc": []
+}
 
 # Temple resizing function
 
@@ -316,6 +322,7 @@ def train(args, model, device, train_loader, optimizer, epoch, criterion):
                 100. * batch_idx / len(train_loader), loss.item()))
             if args.dry_run:
                 break
+    history['train_loss'].append(train_loss)
     return train_loss
 
 
@@ -338,7 +345,8 @@ def test(model, device, test_loader):
             correct += pred.eq(target.view_as(pred)).sum().item()
 
     test_loss /= len(test_loader.dataset)
-
+    history['test_loss'].append(test_loss)
+    history['test_acc'].append(correct / len(test_loader.dataset))
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
@@ -409,6 +417,19 @@ def main():
         test(model, device, test_loader)
         scheduler.step(train_loss)
 
+    fig, (ax1, ax2) = plt.subplots(2)
+    ax1.plot(history['train_loss'])
+    ax1.plot(history['test_loss'])
+    ax1.legend(['Train', 'Test'], loc='upper left')
+    ax1.set_xlabel('Epoch')
+    ax1.set_title('Loss')
+
+    ax2.set_title('Model accuracy')
+    ax2.set_ylabel('Accuracy')
+    ax2.set_xlabel('Epoch')
+    ax2.plot(history['test_acc'])
+    fig.tight_layout()
+    fig.savefig("temp.png")
     if args.save_model:
         torch.save(model.state_dict(), "model.pt")
 
