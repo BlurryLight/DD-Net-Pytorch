@@ -11,9 +11,10 @@ import argparse
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from dataloader.jhmdb_loader import load_jhmdb_data
+from dataloader.jhmdb_loader import load_jhmdb_data, Jdata_generator, JConfig
+from dataloader.shrec_loader import load_shrec_data, Sdata_generator, SConfig
 from models.DDNet_Original import DDNet_Original as DDNet
-from utils import data_generator, makedir
+from utils import makedir
 import sys
 import time
 sys.path.insert(0, './pytorch-summary/torchsummary/')
@@ -24,16 +25,6 @@ history = {
     "test_loss": [],
     "test_acc": []
 }
-
-
-class Config():
-    def __init__(self):
-        self.frame_l = 32  # the length of frames
-        self.joint_n = 15  # the number of joints
-        self.joint_d = 2  # the dimension of joints
-        self.clc_num = 21  # the number of class
-        self.feat_d = 105
-        self.filters = 64
 
 
 def train(args, model, device, train_loader, optimizer, epoch, criterion):
@@ -104,6 +95,8 @@ def main():
                         help='how many batches to wait before logging training status')
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
+    parser.add_argument('--dataset', type=int, required=True, metavar='N',
+                        help='0 for JHMDB, 1 for SHREC coarse, 2 for SHREC fine, others is undefined')
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -114,8 +107,33 @@ def main():
         kwargs.update({'num_workers': 1,
                        'pin_memory': True,
                        'shuffle': True},)
-    C = Config()
-    Train, Test, le = load_jhmdb_data()
+
+    # alias
+    Config = None
+    data_generator = None
+    load_data = None
+    clc_num = 0
+    if args.dataset == 0:
+        Config = JConfig()
+        data_generator = Jdata_generator
+        load_data = load_jhmdb_data
+        clc_num = Config.clc_num
+    elif args.dataset == 1:
+        Config = SConfig()
+        load_data = load_shrec_data
+        clc_num = Config.class_coarse_num
+        data_generator = Sdata_generator('coarse_label')
+    elif args.dataset == 2:
+        Config = SConfig()
+        clc_num = Config.class_fine_num
+        load_data = load_shrec_data
+        data_generator = Sdata_generator('fine_label')
+    else:
+        print("Unsupported dataset!")
+        sys.exit(1)
+
+    C = Config
+    Train, Test, le = load_data()
     X_0, X_1, Y = data_generator(Train, C, le)
     X_0 = torch.from_numpy(X_0).type('torch.FloatTensor')
     X_1 = torch.from_numpy(X_1).type('torch.FloatTensor')
@@ -134,10 +152,10 @@ def main():
         testset, batch_size=args.test_batch_size)
 
     Net = DDNet(C.frame_l, C.joint_n, C.joint_d,
-                C.feat_d, C.filters, C.clc_num)
+                C.feat_d, C.filters, clc_num)
     model = Net.to(device)
 
-    summary(model, [(32, 105), (32, 15, 2)])
+    summary(model, [(C.frame_l, C.feat_d), (C.frame_l, C.joint_n, C.joint_d)])
     optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
 
     criterion = nn.CrossEntropyLoss()
