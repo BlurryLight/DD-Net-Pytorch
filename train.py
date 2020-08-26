@@ -1,15 +1,15 @@
 #! /usr/bin/env python
 #! coding:utf-8
 from pathlib import Path
-import os
 import matplotlib.pyplot as plt
+from torch import log
 from tqdm import tqdm
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import argparse
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from sklearn.metrics import confusion_matrix
 
 from dataloader.jhmdb_loader import load_jhmdb_data, Jdata_generator, JConfig
 from dataloader.shrec_loader import load_shrec_data, Sdata_generator, SConfig
@@ -17,9 +17,14 @@ from models.DDNet_Original import DDNet_Original as DDNet
 from utils import makedir
 import sys
 import time
+import numpy as np
+import logging
 sys.path.insert(0, './pytorch-summary/torchsummary/')
 from torchsummary import summary  # noqa
 
+savedir = Path('experiments') / Path(str(int(time.time())))
+makedir(savedir)
+logging.basicConfig(filename=savedir/'train.log', level=logging.INFO)
 history = {
     "train_loss": [],
     "test_loss": [],
@@ -39,9 +44,11 @@ def train(args, model, device, train_loader, optimizer, epoch, criterion):
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+            msg = ('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data1), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item()))
+            print(msg)
+            logging.info(msg)
             if args.dry_run:
                 break
     history['train_loss'].append(train_loss)
@@ -69,9 +76,11 @@ def test(model, device, test_loader):
     test_loss /= len(test_loader.dataset)
     history['test_loss'].append(test_loss)
     history['test_acc'].append(correct / len(test_loader.dataset))
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+    msg = ('Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
+    print(msg)
+    logging.info(msg)
 
 
 def main():
@@ -97,7 +106,12 @@ def main():
                         help='For Saving the current Model')
     parser.add_argument('--dataset', type=int, required=True, metavar='N',
                         help='0 for JHMDB, 1 for SHREC coarse, 2 for SHREC fine, others is undefined')
+    parser.add_argument('--model', action='store_true', default=False,
+                        help='For Saving the current Model')
+    parser.add_argument('--calc_time', action='store_true', default=False,
+                        help='calc calc time per sample')
     args = parser.parse_args()
+    logging.info(args)
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
     device = torch.device("cuda" if use_cuda else "cpu")
@@ -167,9 +181,7 @@ def main():
         test(model, device, test_loader)
         scheduler.step(train_loss)
 
-    savedir = Path('experiments') / Path(str(int(time.time())))
-    makedir(savedir)
-    fig, (ax1, ax2) = plt.subplots(2)
+    fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, ncols=1)
     ax1.plot(history['train_loss'])
     ax1.plot(history['test_loss'])
     ax1.legend(['Train', 'Test'], loc='upper left')
@@ -180,10 +192,42 @@ def main():
     ax2.set_ylabel('Accuracy')
     ax2.set_xlabel('Epoch')
     ax2.plot(history['test_acc'])
+    xmax = np.argmax(history['test_acc'])
+    ymax = np.max(history['test_acc'])
+    text = "x={}, y={:.3f}".format(xmax, ymax)
+    ax2.annotate(text, xy=(xmax, ymax))
+
+    ax3.set_title('Confusion matrix')
+    model.eval()
+    with torch.no_grad():
+        Y_pred = model(X_0_t.to(device), X_1_t.to(
+            device)).cpu().numpy()
+    Y_test = Y_t.numpy()
+    cnf_matrix = confusion_matrix(
+        Y_test, np.argmax(Y_pred, axis=1))
+    ax3.imshow(cnf_matrix)
     fig.tight_layout()
-    fig.savefig(str(savedir / "temp.png"))
+    fig.savefig(str(savedir / "perf.png"))
     if args.save_model:
         torch.save(model.state_dict(), str(savedir/"model.pt"))
+    if args.calc_time:
+        device = ['cpu', 'cuda']
+        # calc time
+        for d in device:
+            tmp_X_0_t = X_0_t.to(d)
+            tmp_X_1_t = X_1_t.to(d)
+            model = model.to(d)
+            # warm up
+            _ = model(tmp_X_0_t, tmp_X_1_t)
+
+            start = time.perf_counter_ns()
+            for _ in range(10):  # 10 times
+                _ = model(tmp_X_0_t, tmp_X_1_t)
+            end = time.perf_counter_ns()
+            msg = ("total {}ns, {:.2f}ns per one on {}".format((end - start),
+                                                               ((end - start) / (10 * X_0_t.shape[0])), d))
+            print(msg)
+            logging.info(msg)
 
 
 if __name__ == '__main__':
