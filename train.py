@@ -220,12 +220,14 @@ def main():
             # warm up
             _ = model(tmp_X_0_t, tmp_X_1_t)
 
+            tmp_X_0_t = tmp_X_0_t.unsqueeze(1)
+            tmp_X_1_t = tmp_X_1_t.unsqueeze(1)
             start = time.perf_counter_ns()
-            for _ in range(10):  # 10 times
-                _ = model(tmp_X_0_t, tmp_X_1_t)
+            for i in range(tmp_X_0_t.shape[0]):
+                _ = model(tmp_X_0_t[i, :, :, :], tmp_X_1_t[i, :, :, :])
             end = time.perf_counter_ns()
             msg = ("total {}ns, {:.2f}ns per one on {}".format((end - start),
-                                                               ((end - start) / (10 * X_0_t.shape[0])), d))
+                                                               ((end - start) / (X_0_t.shape[0])), d))
             print(msg)
             logging.info(msg)
 
