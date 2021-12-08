@@ -8,18 +8,22 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import pathlib
+import copy
+from scipy.signal import medfilt
 
 # Temple resizing function
 # interpolate l frames to target_l frames
 
 
 def zoom(p, target_l=64, joints_num=25, joints_dim=3):
-    l = p.shape[0]
+    p_copy = copy.deepcopy(p)
+    l = p_copy.shape[0]
     p_new = np.empty([target_l, joints_num, joints_dim])
     for m in range(joints_num):
         for n in range(joints_dim):
             # p_new[:, m, n] = medfilt(p_new[:, m, n], 3) # make no sense. p_new is empty.
-            p_new[:, m, n] = inter.zoom(p[:, m, n], target_l/l)[:target_l]
+            p_copy[:m, n] = medfilt(p_copy[:, m, n], 3)
+            p_new[:, m, n] = inter.zoom(p_copy[:, m, n], target_l/l)[:target_l]
     return p_new
 
 
